@@ -6,6 +6,8 @@ import threading
 from treadmill_client import TreadmillClient
 from fitbit_client import FitbitClient
 import datetime
+import pystray
+from PIL import Image, ImageDraw
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -81,6 +83,76 @@ class App(ctk.CTk):
         self.ble_thread = threading.Thread(target=self._start_loop, daemon=True)
         self.ble_thread.start()
 
+        # Floating Widget Setup
+        self.widget = None
+        self._create_floating_widget()
+        
+        # System Tray Setup
+        self.tray_icon = None
+        self._setup_tray_icon()
+
+    def _create_floating_widget(self):
+        self.widget = tk.Toplevel(self)
+        self.widget.title("Treadmill Widget")
+        self.widget.overrideredirect(True) # Remove title bar
+        self.widget.attributes("-topmost", True) # Keep on top
+        self.widget.configure(bg="#1a1a1a") # Dark background to match app
+        
+        # Position in bottom right corner
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        # Estimate taskbar height around 40px, widget size 250x60
+        x = screen_width - 260
+        y = screen_height - 100
+        self.widget.geometry(f"250x60+{x}+{y}")
+        
+        self.widget_label = tk.Label(
+            self.widget, 
+            text="Treadmill: Disconnected", 
+            font=("Helvetica", 10, "bold"),
+            bg="#1a1a1a", 
+            fg="white",
+            justify="center"
+        )
+        self.widget_label.pack(expand=True, fill="both", padx=10, pady=5)
+        
+        # Allow moving the widget by dragging
+        self.widget.bind("<ButtonPress-1>", self._start_move_widget)
+        self.widget.bind("<B1-Motion>", self._do_move_widget)
+        
+    def _start_move_widget(self, event):
+        self._widget_x = event.x
+        self._widget_y = event.y
+
+    def _do_move_widget(self, event):
+        x = self.widget.winfo_x() - self._widget_x + event.x
+        y = self.widget.winfo_y() - self._widget_y + event.y
+        self.widget.geometry(f"+{x}+{y}")
+        
+    def _setup_tray_icon(self):
+        # Create a simple icon image
+        image = Image.new('RGB', (64, 64), color = (0, 100, 200))
+        d = ImageDraw.Draw(image)
+        d.text((10,25), "TR", fill=(255,255,255))
+        
+        menu = pystray.Menu(
+            pystray.MenuItem("Show App", self._show_app_from_tray),
+            pystray.MenuItem("Exit", self._exit_from_tray)
+        )
+        
+        self.tray_icon = pystray.Icon("treadmill_icon", image, "Treadmill Dashboard", menu)
+        # Start tray in a separate thread so it doesn't block tkinter
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        
+    def _show_app_from_tray(self, icon, item):
+        # The callback is called from the tray thread, so we must schedule the UI update
+        self.after(0, self.deiconify)
+        self.after(0, self.lift)
+
+    def _exit_from_tray(self, icon, item):
+        # Schedule closing on the main thread
+        self.after(0, self.on_closing)
+
     def _init_fitbit(self):
         try:
             # Requires fitbit_tokens.json to exist from a prior run, or will hang waiting for auth
@@ -127,8 +199,48 @@ class App(ctk.CTk):
                     if old_state == "Running" and value == "Stopped":
                         self._trigger_fitbit_sync()
                         
+                self._update_window_title()
+
         # Schedule the UI update on the main Tkinter loop
         self.after(0, _update)
+
+    def _update_window_title(self):
+        try:
+            steps = self.metrics['steps'].get().split(': ')[1]
+            dist = self.metrics['distance'].get().split(': ')[1]
+            speed = self.metrics['speed'].get().split(': ')[1]
+            time = getattr(self, "metrics", {}).get("time").get().split(': ')[1] if getattr(self, "metrics", {}).get("time") else "0:00:00"
+            state = self.metrics['state'].get().split(': ')[1]
+            
+            # Format display string
+            display_str = f"TR1200 | {time} | {speed} | {dist} | {steps} steps"
+            
+            # 1. Update Window Title (Taskbar)
+            if state in ["Running", "Paused"] or (state == "Stopped" and float(dist.split(' ')[0]) > 0):
+                self.title(display_str)
+            else:
+                self.title("Lifespan TR1200 Dashboard")
+                display_str = "Lifespan TR1200 Dashboard"
+                
+            # 2. Update Hover Text for Tray Icon
+            if self.tray_icon:
+                try:
+                    self.tray_icon.title = display_str[:64] # Windows limits tooltip length
+                except Exception:
+                    pass
+                    
+            # 3. Update Floating Widget Text
+            if self.widget and self.widget.winfo_exists():
+                if state in ["Running", "Paused"]:
+                    self.widget_label.configure(text=f"{time}\n{speed} | {dist} | {steps} steps", fg="#00ff00")
+                elif state == "Stopped" and float(dist.split(' ')[0]) > 0:
+                    self.widget_label.configure(text=f"{time}\n{speed} | {dist} | {steps} steps", fg="#ffaa00")
+                else:
+                    self.widget_label.configure(text="Treadmill: Disconnected", fg="white")
+                    
+        except Exception as e:
+            print(f"Error updating widget displays: {e}")
+            self.title("Lifespan TR1200 Dashboard")
 
     def connect_treadmill(self):
         self.status_label.configure(text="Status: Connecting...")
@@ -245,6 +357,9 @@ class App(ctk.CTk):
         else:
              self.loop.call_soon_threadsafe(self.loop.stop)
              
+        if self.tray_icon:
+            self.tray_icon.stop()
+            
         self.destroy()
 
 if __name__ == "__main__":
