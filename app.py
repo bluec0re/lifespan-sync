@@ -8,6 +8,8 @@ from fitbit_client import FitbitClient
 import datetime
 import pystray
 from PIL import Image, ImageDraw
+import json
+import os
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -25,6 +27,9 @@ class App(ctk.CTk):
         self.fitbit_client = None
         # Start Fitbit Auth in background to not freeze UI
         threading.Thread(target=self._init_fitbit, daemon=True).start()
+        
+        # Auto-connect on start
+        self.after(500, self.connect_treadmill)
         
         # Connection status
         self.status_label = ctk.CTkLabel(self, text="Status: Disconnected", font=("Helvetica", 16))
@@ -155,8 +160,13 @@ class App(ctk.CTk):
 
     def _init_fitbit(self):
         try:
+            # Load config
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                
             # Requires fitbit_tokens.json to exist from a prior run, or will hang waiting for auth
-            self.fitbit_client = FitbitClient("23TY9D", "c1226d3f046f89708e82e1cca028ee6d") 
+            self.fitbit_client = FitbitClient(config["fitbit_client_id"], config["fitbit_client_secret"]) 
         except Exception as e:
             print(f"Fitbit init skipped or failed: {e}")
 
