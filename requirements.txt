@@ -1,2 +1,5 @@
 bleak
 customtkinter
+fitbit
+cherrypy
+requests-oauthlib

@@ -1,8 +1,11 @@
 import tkinter as tk
+import tkinter.messagebox as messagebox
 import customtkinter as ctk
 import asyncio
 import threading
 from treadmill_client import TreadmillClient
+from fitbit_client import FitbitClient
+import datetime
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -16,6 +19,10 @@ class App(ctk.CTk):
         
         self.treadmill = TreadmillClient(update_callback=self._on_metric_update)
         self.loop = asyncio.new_event_loop()
+        
+        self.fitbit_client = None
+        # Start Fitbit Auth in background to not freeze UI
+        threading.Thread(target=self._init_fitbit, daemon=True).start()
         
         # Connection status
         self.status_label = ctk.CTkLabel(self, text="Status: Disconnected", font=("Helvetica", 16))
@@ -39,6 +46,9 @@ class App(ctk.CTk):
 
         self.speed_up_btn = ctk.CTkButton(self.controls_frame, text="Speed +", command=self.increase_speed, state="disabled")
         self.speed_up_btn.pack(side="left", padx=10, pady=10, expand=True)
+
+        self.test_sync_btn = ctk.CTkButton(self.controls_frame, text="Test Sync", command=self.test_fitbit_sync)
+        self.test_sync_btn.pack(side="left", padx=10, pady=10, expand=True)
 
         self.target_speed = 1.0 # default starting speed in km/h
 
@@ -71,6 +81,13 @@ class App(ctk.CTk):
         self.ble_thread = threading.Thread(target=self._start_loop, daemon=True)
         self.ble_thread.start()
 
+    def _init_fitbit(self):
+        try:
+            # Requires fitbit_tokens.json to exist from a prior run, or will hang waiting for auth
+            self.fitbit_client = FitbitClient("23TY9D", "c1226d3f046f89708e82e1cca028ee6d") 
+        except Exception as e:
+            print(f"Fitbit init skipped or failed: {e}")
+
     def _start_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
@@ -81,6 +98,7 @@ class App(ctk.CTk):
             if key == "status":
                 self.status_label.configure(text=f"Status: {value.capitalize()}")
                 if value in ["disconnected", "failed"]:
+                    self._trigger_fitbit_sync()
                     self.connect_btn.configure(state="normal", text="Connect to Treadmill")
                     self.start_btn.configure(state="disabled")
                     self.stop_btn.configure(state="disabled")
@@ -102,8 +120,13 @@ class App(ctk.CTk):
                 elif key == "time":
                     self.metrics[key].set(f"{key.capitalize()}: {value}")
                 elif key == "state":
+                    old_state = self.metrics["state"].get().split(": ")[1]
                     self.metrics[key].set(f"{key.capitalize()}: {value}")
-        
+                    
+                    # Transition from Running -> Stopped cleanly logs steps
+                    if old_state == "Running" and value == "Stopped":
+                        self._trigger_fitbit_sync()
+                        
         # Schedule the UI update on the main Tkinter loop
         self.after(0, _update)
 
@@ -129,6 +152,52 @@ class App(ctk.CTk):
     def stop_treadmill(self):
         asyncio.run_coroutine_threadsafe(self.treadmill.stop_treadmill(), self.loop)
 
+    def _get_unsynced_workout(self):
+        """Returns (steps, dist_km, ms) if there is a valid, unsynced workout, otherwise None"""
+        if not self.fitbit_client or not self.fitbit_client.client:
+            return None
+
+        try:
+            steps_str = self.metrics["steps"].get().split(": ")[1]
+            dist_str = self.metrics["distance"].get().split(": ")[1].replace(" km", "")
+            time_str = self.metrics["time"].get().split(": ")[1]
+            
+            steps = int(steps_str)
+            if steps <= 10:
+                return None
+                
+            dist_km = float(dist_str)
+            
+            # parse "H:M:S" to pure milliseconds
+            parts = time_str.split(":")
+            if len(parts) == 3:
+                ms = (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
+            else:
+                ms = 0
+            
+            sync_key = (steps, dist_km, ms)
+            if getattr(self, "last_sync_key", None) == sync_key:
+                return None
+                
+            if steps > 10 and ms > 0:
+                return (steps, dist_km, ms, sync_key, time_str)
+                
+        except Exception as e:
+            print(f"Error parsing metrics for Fitbit sync parsing: {e}")
+            
+        return None
+
+    def _trigger_fitbit_sync(self):
+        workout = self._get_unsynced_workout()
+        if not workout:
+            print("No valid unsynced workout data to sync.")
+            return
+
+        steps, dist_km, ms, sync_key, time_str = workout
+        self.last_sync_key = sync_key
+        print(f"Syncing workout to Fitbit ({steps} steps over {time_str})")
+        threading.Thread(target=self.fitbit_client.log_treadmill_activity, args=(steps, dist_km, ms), daemon=True).start()
+
     def increase_speed(self):
         self.target_speed = min(6.4, self.target_speed + 0.1)
         print(f"Setting speed to {self.target_speed} km/h")
@@ -139,7 +208,33 @@ class App(ctk.CTk):
         print(f"Setting speed to {self.target_speed} km/h")
         asyncio.run_coroutine_threadsafe(self.treadmill.set_speed(self.target_speed), self.loop)
 
+    def test_fitbit_sync(self):
+        if not self.fitbit_client or not self.fitbit_client.client:
+            print("Fitbit client not authenticated. Cannot test.")
+            return
+        
+        # Log a dummy 15-minute 2000-step walk to see what the API trace says
+        print("Triggering Manual API Test Sync...")
+        threading.Thread(target=self.fitbit_client.log_treadmill_activity, args=(2000, 1.5, 900000), daemon=True).start()
+
     def on_closing(self):
+        # Check for unsynced data
+        workout = self._get_unsynced_workout()
+        if workout:
+            steps, dist_km, ms, sync_key, time_str = workout
+            should_sync = messagebox.askyesno(
+                "Unsynced Workout", 
+                f"You have an unsynced workout of {steps} steps ({time_str}).\n\nWould you like to log this to Fitbit before closing?"
+            )
+            if should_sync:
+                self.last_sync_key = sync_key
+                print("Blocking exit to sync to Fitbit...")
+                success = self.fitbit_client.log_treadmill_activity(steps, dist_km, ms)
+                if success:
+                    messagebox.showinfo("Success", "Workout successfully synced to Fitbit!")
+                else:
+                    messagebox.showerror("Error", "Failed to sync to Fitbit. Check console for details.")
+    
         # Disconnect gracefully
         async def _disconnect():
             await self.treadmill.disconnect()
