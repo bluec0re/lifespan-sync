@@ -147,6 +147,7 @@ class App(ctk.CTk):
             "missing_steps": ctk.StringVar(
                 value="Missing Steps: 0 (Goal: 0, Initial: 0)"
             ),
+            "eta": ctk.StringVar(value="ETA: N/A"),
         }
 
         # Labels
@@ -190,6 +191,11 @@ class App(ctk.CTk):
             textvariable=self.metrics["missing_steps"],
             font=("Helvetica", 24),
         ).grid(row=4, column=0, columnspan=2, pady=10, padx=10)
+        ctk.CTkLabel(
+            self.metrics_frame,
+            textvariable=self.metrics["eta"],
+            font=("Helvetica", 24),
+        ).grid(row=5, column=0, columnspan=2, pady=10, padx=10)
 
         # Start BLE event loop thread
         self.ble_thread = threading.Thread(target=self._start_loop, daemon=True)
@@ -311,9 +317,14 @@ class App(ctk.CTk):
             steps_and_goal = self.fitbit_client.get_steps_and_goal()
             if steps_and_goal is not None:
                 self.fitbit_steps, self.step_goal = steps_and_goal
-                self.metrics["missing_steps"].set(
-                    f"Missing Steps: {self.step_goal - (int(self.metrics['steps'].get().split(': ')[1]) + self.fitbit_steps)} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
-                )
+
+                def _update_missing_steps():
+                    self.metrics["missing_steps"].set(
+                        f"Missing Steps: {self.step_goal - (int(self.metrics['steps'].get().split(': ')[1]) + self.fitbit_steps)} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
+                    )
+                    self._update_eta()
+
+                self.after(0, _update_missing_steps)
 
         except Exception as e:
             print(f"Fitbit init skipped or failed: {e}")
@@ -385,6 +396,7 @@ class App(ctk.CTk):
                         self.metrics["missing_steps"].set(
                             f"Missing Steps: {missing_steps} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
                         )
+                    self._update_eta()
                 elif key == "distance":
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.dist_unit}"
@@ -398,6 +410,7 @@ class App(ctk.CTk):
                         self.target_speed = value
                 elif key == "time":
                     self.metrics[key].set(f"{key.capitalize()}: {value}")
+                    self._update_eta()
                 elif key == "state":
                     old_state = self.metrics["state"].get().split(": ")[1]
                     self.metrics[key].set(f"{key.capitalize()}: {value}")
@@ -410,6 +423,41 @@ class App(ctk.CTk):
 
         # Schedule the UI update on the main Tkinter loop
         self.after(0, _update)
+
+    def _update_eta(self):
+        if self.step_goal is None or self.fitbit_steps is None:
+            return
+
+        try:
+            steps_str = self.metrics["steps"].get().split(": ")[1]
+            time_str = self.metrics["time"].get().split(": ")[1]
+            steps = int(steps_str)
+
+            parts = time_str.split(":")
+            if len(parts) == 3:
+                seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            else:
+                seconds = 0
+
+            missing_steps = self.step_goal - (steps + self.fitbit_steps)
+
+            if steps > 0 and seconds > 0 and missing_steps > 0:
+                steps_per_sec = steps / seconds
+                eta_seconds = int(missing_steps / steps_per_sec)
+
+                eta_td = datetime.timedelta(seconds=eta_seconds)
+                finish_time = datetime.datetime.now() + eta_td
+
+                self.metrics["eta"].set(
+                    f"ETA: {eta_td} ({finish_time.strftime('%H:%M:%S')})"
+                )
+            elif missing_steps <= 0:
+                self.metrics["eta"].set("ETA: Goal Reached!")
+            else:
+                self.metrics["eta"].set("ETA: N/A")
+
+        except Exception as e:
+            pass
 
     def _update_window_title(self):
         try:
