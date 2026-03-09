@@ -57,14 +57,16 @@ DISTANCE_DIVISOR = 100.0
 
 
 class TreadmillClient:
-    def __init__(self, update_callback=None):
+    def __init__(self, update_callback=None, initial_weight=70):
         """
         update_callback is called with (key, value) pairs
         e.g., update_callback("speed", 2.5)
+        initial_weight is the user's weight in kg (metric) or lbs (imperial)
         """
         self.client = None
         self.device_address = None
         self.update_callback = update_callback
+        self.initial_weight = initial_weight
         self.is_connected = False
         self._disconnect_event = asyncio.Event()
         self._query_queue = asyncio.Queue()
@@ -96,6 +98,11 @@ class TreadmillClient:
 
         logger.info("Initializing notifications...")
         await self.client.start_notify(CHARACTERISTIC_UUID, self._handle_rx)
+
+        # Set initial weight if connected
+        if self.initial_weight:
+            await self.set_weight(self.initial_weight)
+            await asyncio.sleep(0.5)
 
         for name, query in INIT_QUERIES.items():
             self._current_query = name

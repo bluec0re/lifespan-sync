@@ -35,7 +35,21 @@ class App(ctk.CTk):
         self.title("Lifespan TR1200 Dashboard")
         self.geometry("600x400")
 
-        self.treadmill = TreadmillClient(update_callback=self._on_metric_update)
+        self.initial_weight = 70
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                    if "initial_weight" in config:
+                        self.initial_weight = config["initial_weight"]
+        except Exception as e:
+            print(f"Could not load initial weight from config: {e}")
+
+        self.treadmill = TreadmillClient(
+            update_callback=self._on_metric_update,
+            initial_weight=self.initial_weight
+        )
         self.loop = asyncio.new_event_loop()
 
         self.fitbit_client = None
