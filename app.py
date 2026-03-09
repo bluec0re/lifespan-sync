@@ -36,7 +36,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Lifespan TR1200 Dashboard")
-        self.geometry("800x400")
+        self.geometry("800x500")
 
         self.initial_weight = 70
         try:
@@ -119,6 +119,8 @@ class App(ctk.CTk):
         self.default_speed_btn.pack(side="left", padx=10, pady=10, expand=True)
 
         self.target_speed = None  # Tracked from `metrics` upon first connect
+        self.step_goal = None
+        self.fitbit_steps = None
 
         self.unit_system = "metric"
         self.dist_unit = "km"
@@ -140,6 +142,7 @@ class App(ctk.CTk):
             "calories": ctk.StringVar(value="Calories: 0"),
             "state": ctk.StringVar(value="State: Unknown"),
             "weight": ctk.StringVar(value=f"Weight: {self.initial_weight} kg"), # Initial weight
+            "missing_steps": ctk.StringVar(value="Missing Steps: 0 (Goal: 0, Initial: 0)"),
         }
 
         # Labels
@@ -178,6 +181,11 @@ class App(ctk.CTk):
             textvariable=self.metrics["weight"],
             font=("Helvetica", 24),
         ).grid(row=3, column=0, columnspan=2, pady=10, padx=10)
+        ctk.CTkLabel(
+            self.metrics_frame,
+            textvariable=self.metrics["missing_steps"],
+            font=("Helvetica", 24),
+        ).grid(row=4, column=0, columnspan=2, pady=10, padx=10)
 
         # Start BLE event loop thread
         self.ble_thread = threading.Thread(target=self._start_loop, daemon=True)
@@ -290,6 +298,12 @@ class App(ctk.CTk):
                         self.treadmill.set_weight(weight_int), self.loop
                     )
 
+            # Retrieve current steps and step goal from Fitbit if possible
+            steps_and_goal = self.fitbit_client.get_steps_and_goal()
+            if steps_and_goal is not None:
+                self.fitbit_steps, self.step_goal = steps_and_goal
+                self.metrics["missing_steps"].set(f"Missing Steps: {self.step_goal - (int(self.metrics['steps'].get().split(': ')[1]) + self.fitbit_steps)} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})")
+
         except Exception as e:
             print(f"Fitbit init skipped or failed: {e}")
 
@@ -345,8 +359,15 @@ class App(ctk.CTk):
                     pass
                 self._update_window_title()
             elif key in self.metrics:
-                if key == "steps" or key == "calories":
-                    self.metrics[key].set(f"{key.capitalize()}: {int(value)}")
+                if key == "calories":
+                    int_value = int(value)
+                    self.metrics[key].set(f"{key.capitalize()}: {int_value}")
+                elif key == "steps":
+                    int_value = int(value)
+                    self.metrics[key].set(f"{key.capitalize()}: {int_value}")
+                    if self.fitbit_steps is not None and self.step_goal is not None:
+                        missing_steps = self.step_goal - (int_value + self.fitbit_steps)
+                        self.metrics["missing_steps"].set(f"Missing Steps: {missing_steps} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})")
                 elif key == "distance":
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.dist_unit}"

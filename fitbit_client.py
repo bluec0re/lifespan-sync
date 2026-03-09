@@ -198,7 +198,62 @@ class FitbitClient:
             print(f"Failed to fetch weight from Fitbit: {e}")
             return None
 
+    def get_step_goal(self):
+        if not self.client:
+            print("Cannot get step goal from Fitbit: Not authorized.")
+            return None
+        print("Fetching step goal from Fitbit...")
+        try:
+            profile = self.client.activities_daily_goal()
+            if "goals" in profile and "steps" in profile["goals"]:
+                step_goal = profile["goals"]["steps"]
+                print(f"Successfully retrieved step goal from Fitbit: {step_goal}")
+                return step_goal
+            else:
+                print("Step goal not found in Fitbit profile payload.")
+                return None
+        except Exception as e:
+            print(f"Failed to fetch step goal from Fitbit: {e}")
+            return None
 
+    def get_current_steps(self):
+        if not self.client:
+            print("Cannot get current steps from Fitbit: Not authorized.")
+            return None
+        print("Fetching current steps from Fitbit...")
+        try:
+            activities = self.client.activities(date=datetime.datetime.now().strftime("%Y-%m-%d"))
+            if "summary" in activities and "steps" in activities["summary"]:
+                current_steps = activities["summary"]["steps"]
+                print(f"Successfully retrieved current steps from Fitbit: {current_steps}")
+                return current_steps
+            else:
+                print("Current steps not found in Fitbit profile payload.")
+                return None
+        except Exception as e:
+            print(f"Failed to fetch current steps from Fitbit: {e}")
+            return None
+
+    def get_steps_and_goal(self):
+        if not self.client:
+            print("Cannot get steps and goal from Fitbit: Not authorized.")
+            return None
+        print("Fetching steps and goal from Fitbit...")
+        try:
+            activities = self.client.activities(date=datetime.datetime.now().strftime("%Y-%m-%d"))
+            if "summary" in activities and "steps" in activities["summary"] and "goals" in activities and "steps" in activities["goals"]:
+                current_steps = activities["summary"]["steps"]
+                step_goal = activities["goals"]["steps"]
+                print(f"Successfully retrieved current steps from Fitbit: {current_steps}")
+                print(f"Successfully retrieved step goal from Fitbit: {step_goal}")
+                return current_steps, step_goal
+            else:
+                print("Current steps or step goal not found in Fitbit profile payload.")
+                return None
+        except Exception as e:
+            print(f"Failed to fetch current steps from Fitbit: {e}")
+            return None
+  
 if __name__ == "__main__":
     CLIENT_ID = input("Enter your Fitbit Client ID: ").strip()
     CLIENT_SECRET = input("Enter your Fitbit Client Secret: ").strip()
