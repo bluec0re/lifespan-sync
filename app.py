@@ -114,7 +114,7 @@ class App(ctk.CTk):
             command=self.set_default_speed,
             state="disabled",
             fg_color="#44aa44",
-            hover_color="#338833"
+            hover_color="#338833",
         )
         self.default_speed_btn.pack(side="left", padx=10, pady=10, expand=True)
 
@@ -141,8 +141,12 @@ class App(ctk.CTk):
             "time": ctk.StringVar(value="Time: 0:00:00"),
             "calories": ctk.StringVar(value="Calories: 0"),
             "state": ctk.StringVar(value="State: Unknown"),
-            "weight": ctk.StringVar(value=f"Weight: {self.initial_weight} kg"), # Initial weight
-            "missing_steps": ctk.StringVar(value="Missing Steps: 0 (Goal: 0, Initial: 0)"),
+            "weight": ctk.StringVar(
+                value=f"Weight: {self.initial_weight} kg"
+            ),  # Initial weight
+            "missing_steps": ctk.StringVar(
+                value="Missing Steps: 0 (Goal: 0, Initial: 0)"
+            ),
         }
 
         # Labels
@@ -285,9 +289,14 @@ class App(ctk.CTk):
                 )
                 self.initial_weight = weight_int
                 self.treadmill.initial_weight = weight_int
-                
+
                 # Update UI
-                self.after(0, lambda: self.metrics["weight"].set(f"Weight: {self.initial_weight} kg"))
+                self.after(
+                    0,
+                    lambda: self.metrics["weight"].set(
+                        f"Weight: {self.initial_weight} kg"
+                    ),
+                )
 
                 # If treadmill already connected (since fitbit auth is in background), set it right away
                 if (
@@ -302,7 +311,9 @@ class App(ctk.CTk):
             steps_and_goal = self.fitbit_client.get_steps_and_goal()
             if steps_and_goal is not None:
                 self.fitbit_steps, self.step_goal = steps_and_goal
-                self.metrics["missing_steps"].set(f"Missing Steps: {self.step_goal - (int(self.metrics['steps'].get().split(': ')[1]) + self.fitbit_steps)} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})")
+                self.metrics["missing_steps"].set(
+                    f"Missing Steps: {self.step_goal - (int(self.metrics['steps'].get().split(': ')[1]) + self.fitbit_steps)} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
+                )
 
         except Exception as e:
             print(f"Fitbit init skipped or failed: {e}")
@@ -345,16 +356,20 @@ class App(ctk.CTk):
                         self.metrics["distance"].get().split(": ")[1].split(" ")[0]
                     )
                     speed_val = self.metrics["speed"].get().split(": ")[1].split(" ")[0]
-                    
+
                     # Update label to show appropriate kg/lbs
-                    weight_val = self.metrics["weight"].get().split(": ")[1].split(" ")[0]
+                    weight_val = (
+                        self.metrics["weight"].get().split(": ")[1].split(" ")[0]
+                    )
                     weight_unit_str = "kg" if value == "metric" else "lbs"
 
                     self.metrics["distance"].set(
                         f"Distance: {dist_val} {self.dist_unit}"
                     )
                     self.metrics["speed"].set(f"Speed: {speed_val} {self.speed_unit}")
-                    self.metrics["weight"].set(f"Weight: {weight_val} {weight_unit_str}")
+                    self.metrics["weight"].set(
+                        f"Weight: {weight_val} {weight_unit_str}"
+                    )
                 except Exception:
                     pass
                 self._update_window_title()
@@ -367,7 +382,9 @@ class App(ctk.CTk):
                     self.metrics[key].set(f"{key.capitalize()}: {int_value}")
                     if self.fitbit_steps is not None and self.step_goal is not None:
                         missing_steps = self.step_goal - (int_value + self.fitbit_steps)
-                        self.metrics["missing_steps"].set(f"Missing Steps: {missing_steps} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})")
+                        self.metrics["missing_steps"].set(
+                            f"Missing Steps: {missing_steps} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
+                        )
                 elif key == "distance":
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.dist_unit}"
@@ -543,8 +560,10 @@ class App(ctk.CTk):
             else MAX_SPEED_METRIC
         )
         if self.target_speed is None:
-            self.target_speed = float(self.metrics["speed"].get().split(": ")[1].split(" ")[0])
-            
+            self.target_speed = float(
+                self.metrics["speed"].get().split(": ")[1].split(" ")[0]
+            )
+
         self.target_speed = min(max_speed, self.target_speed + SPEED_INCREMENT)
         print(f"Setting speed to {self.target_speed:.1f} {self.speed_unit}")
         asyncio.run_coroutine_threadsafe(
@@ -558,8 +577,10 @@ class App(ctk.CTk):
             else MIN_SPEED_METRIC
         )
         if self.target_speed is None:
-            self.target_speed = float(self.metrics["speed"].get().split(": ")[1].split(" ")[0])
-            
+            self.target_speed = float(
+                self.metrics["speed"].get().split(": ")[1].split(" ")[0]
+            )
+
         self.target_speed = max(min_speed, self.target_speed - SPEED_INCREMENT)
         print(f"Setting speed to {self.target_speed:.1f} {self.speed_unit}")
         asyncio.run_coroutine_threadsafe(
