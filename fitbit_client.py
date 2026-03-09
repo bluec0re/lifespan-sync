@@ -28,7 +28,9 @@ class OAuth2Server:
         self.client_id = client_id
         self.client_secret = client_secret
         self.fitbit = OAuth2Session(
-            client_id, redirect_uri="http://127.0.0.1:8080/", scope=["activity"]
+            client_id,
+            redirect_uri="http://127.0.0.1:8080/",
+            scope=["activity", "profile", "weight"],
         )
         self.auth_url_base = "https://www.fitbit.com/oauth2/authorize"
         self.token_url = "https://api.fitbit.com/oauth2/token"
@@ -98,6 +100,7 @@ class FitbitClient:
                     refresh_token=tokens.get("refresh_token"),
                     expires_at=expires_at,
                     refresh_cb=self._update_tokens,
+                    system=fitbit.Fitbit.METRIC,
                 )
                 # Token loaded successfully
                 print("Fitbit client loaded via saved tokens.")
@@ -135,6 +138,7 @@ class FitbitClient:
                 refresh_token=server.refresh_token,
                 expires_at=server.expires_at,
                 refresh_cb=self._update_tokens,
+                system=fitbit.Fitbit.METRIC,
             )
             print("Successfully authorized and saved new tokens.")
         else:
@@ -175,6 +179,24 @@ class FitbitClient:
             if hasattr(e, "response") and getattr(e, "response", None):
                 print(f"API Error Response: {e.response.text}")
             return False
+
+    def get_weight(self):
+        if not self.client:
+            print("Cannot get weight from Fitbit: Not authorized.")
+            return None
+        print("Fetching user profile/weight from Fitbit...")
+        try:
+            profile = self.client.user_profile_get()
+            if "user" in profile and "weight" in profile["user"]:
+                weight = profile["user"]["weight"]
+                print(f"Successfully retrieved weight from Fitbit: {weight}")
+                return weight
+            else:
+                print("Weight not found in Fitbit profile payload.")
+                return None
+        except Exception as e:
+            print(f"Failed to fetch weight from Fitbit: {e}")
+            return None
 
 
 if __name__ == "__main__":

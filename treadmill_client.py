@@ -143,7 +143,9 @@ class TreadmillClient:
             val = f"{h:d}:{m:02d}:{s:02d}"
         elif query_type == "steps":
             # Just guessing step format based on others. Often 2-3 bytes.
-            val = data[2] * VALUE_MULTIPLIER + data[3]  # 16-bit int example, may need tweaking
+            val = (
+                data[2] * VALUE_MULTIPLIER + data[3]
+            )  # 16-bit int example, may need tweaking
         elif query_type == "calories":
             val = data[2] * VALUE_MULTIPLIER + data[3]  # 16-bit int example
         elif query_type == "unit":
@@ -189,13 +191,16 @@ class TreadmillClient:
     async def set_weight(self, weight):
         if not self.is_connected:
             return
-        cmd = SET_WEIGHT_CMD + weight.to_bytes(2, "little") + b"\x00\x00"
+        print(f"Setting weight to {weight}")
+        cmd = SET_WEIGHT_CMD + weight.to_bytes(2, "big") + b"\x00\x00"
         await self.client.write_gatt_char(CHARACTERISTIC_UUID, cmd)
 
     async def start_treadmill(self):
         if self.is_connected:
+            print("Starting treadmill...")
             await self.client.write_gatt_char(CHARACTERISTIC_UUID, CMDS["start"])
 
     async def stop_treadmill(self):
         if self.is_connected:
+            print("Stopping treadmill...")
             await self.client.write_gatt_char(CHARACTERISTIC_UUID, CMDS["stop"])
