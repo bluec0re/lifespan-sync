@@ -16,10 +16,12 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 # Constants
-DEFAULT_SPEED = 0.6
-MAX_SPEED_METRIC = 3.2
+MAX_SPEED_METRIC = 6.4
 MAX_SPEED_IMPERIAL = 4.0
-MIN_SPEED = 0.4
+MIN_SPEED_METRIC = 0.6
+MIN_SPEED_IMPERIAL = 0.4
+BTN_DEFAULT_SPEED_METRIC = 2.0
+BTN_DEFAULT_SPEED_IMPERIAL = 1.2
 SPEED_INCREMENT = 0.1
 MIN_STEPS_TO_SYNC = 10
 POLL_INTERVAL_SEC = 2.0
@@ -106,7 +108,17 @@ class App(ctk.CTk):
         )
         self.speed_up_btn.pack(side="left", padx=10, pady=10, expand=True)
 
-        self.target_speed = DEFAULT_SPEED  # default starting speed
+        self.default_speed_btn = ctk.CTkButton(
+            self.controls_frame,
+            text="Default Target (2.0/1.2)",
+            command=self.set_default_speed,
+            state="disabled",
+            fg_color="#44aa44",
+            hover_color="#338833"
+        )
+        self.default_speed_btn.pack(side="left", padx=10, pady=10, expand=True)
+
+        self.target_speed = None  # Tracked from `metrics` upon first connect
 
         self.unit_system = "metric"
         self.dist_unit = "km"
@@ -304,6 +316,7 @@ class App(ctk.CTk):
                     self.stop_btn.configure(state="normal")
                     self.speed_up_btn.configure(state="normal")
                     self.speed_down_btn.configure(state="normal")
+                    self.default_speed_btn.configure(state="normal")
             elif key == "unit":
                 if value == "metric":
                     self.unit_system = "metric"
@@ -342,6 +355,9 @@ class App(ctk.CTk):
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.speed_unit}"
                     )
+                    # Initialize target speed on first connect directly from treadmill values
+                    if self.target_speed is None:
+                        self.target_speed = value
                 elif key == "time":
                     self.metrics[key].set(f"{key.capitalize()}: {value}")
                 elif key == "state":
@@ -487,12 +503,27 @@ class App(ctk.CTk):
             daemon=True,
         ).start()
 
+    def set_default_speed(self):
+        default_speed = (
+            BTN_DEFAULT_SPEED_IMPERIAL
+            if getattr(self, "unit_system", "metric") == "imperial"
+            else BTN_DEFAULT_SPEED_METRIC
+        )
+        self.target_speed = default_speed
+        print(f"Setting default speed to {self.target_speed:.1f} {self.speed_unit}")
+        asyncio.run_coroutine_threadsafe(
+            self.treadmill.set_speed(self.target_speed), self.loop
+        )
+
     def increase_speed(self):
         max_speed = (
             MAX_SPEED_IMPERIAL
             if getattr(self, "unit_system", "metric") == "imperial"
             else MAX_SPEED_METRIC
         )
+        if self.target_speed is None:
+            self.target_speed = float(self.metrics["speed"].get().split(": ")[1].split(" ")[0])
+            
         self.target_speed = min(max_speed, self.target_speed + SPEED_INCREMENT)
         print(f"Setting speed to {self.target_speed:.1f} {self.speed_unit}")
         asyncio.run_coroutine_threadsafe(
@@ -500,7 +531,15 @@ class App(ctk.CTk):
         )
 
     def decrease_speed(self):
-        self.target_speed = max(MIN_SPEED, self.target_speed - SPEED_INCREMENT)
+        min_speed = (
+            MIN_SPEED_IMPERIAL
+            if getattr(self, "unit_system", "metric") == "imperial"
+            else MIN_SPEED_METRIC
+        )
+        if self.target_speed is None:
+            self.target_speed = float(self.metrics["speed"].get().split(": ")[1].split(" ")[0])
+            
+        self.target_speed = max(min_speed, self.target_speed - SPEED_INCREMENT)
         print(f"Setting speed to {self.target_speed:.1f} {self.speed_unit}")
         asyncio.run_coroutine_threadsafe(
             self.treadmill.set_speed(self.target_speed), self.loop
