@@ -225,10 +225,10 @@ class App(ctk.CTk):
         # Position in bottom right corner
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        # Estimate taskbar height around 40px, widget size 250x60
-        x = screen_width - 260
-        y = screen_height - 100
-        self.widget.geometry(f"250x60+{x}+{y}")
+        # Estimate taskbar height around 40px, widget size 280x85
+        x = screen_width - 290
+        y = screen_height - 125
+        self.widget.geometry(f"280x85+{x}+{y}")
 
         self.widget_label = tk.Label(
             self.widget,
@@ -525,13 +525,21 @@ class App(ctk.CTk):
 
             # 3. Update Floating Widget Text
             if self.widget and self.widget.winfo_exists():
+                eta_str = self.metrics["eta"].get().replace("ETA: ", "")
+                try:
+                    missing_val = self.metrics["missing_steps"].get().split("Missing Steps: ")[1].split(" ")[0]
+                except IndexError:
+                    missing_val = "N/A"
+                    
+                text_to_show = f"{time}\n{speed} | {dist} | {steps} steps\n{missing_val} left | ETA: {eta_str}"
+
                 if state in ACTIVE_STATES:
                     self.widget_label.configure(
-                        text=f"{time}\n{speed} | {dist} | {steps} steps", fg="#00ff00"
+                        text=text_to_show, fg="#00ff00"
                     )
                 elif state in STOPPED_STATES and float(dist.split(" ")[0]) > 0:
                     self.widget_label.configure(
-                        text=f"{time}\n{speed} | {dist} | {steps} steps", fg="#ffaa00"
+                        text=text_to_show, fg="#ffaa00"
                     )
                 else:
                     self.widget_label.configure(
