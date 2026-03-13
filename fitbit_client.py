@@ -149,36 +149,68 @@ class FitbitClient:
             print("Cannot log to Fitbit: Not authorized.")
             return False
 
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        start_time_str = (
-            datetime.datetime.now() - datetime.timedelta(milliseconds=duration_ms)
-        ).strftime("%H:%M:%S")
+        end_time_dt = datetime.datetime.now()
+        start_time_dt = end_time_dt - datetime.timedelta(milliseconds=duration_ms)
+
+        activities_to_log = []
+        current_time = start_time_dt
+        remaining_ms = duration_ms
+        remaining_steps = steps
+
+        while current_time.date() < end_time_dt.date():
+            next_midnight = datetime.datetime.combine(current_time.date() + datetime.timedelta(days=1), datetime.time.min)
+            duration_part_ms = (next_midnight - current_time).total_seconds() * 1000
+            steps_part = int(steps * (duration_part_ms / duration_ms))
+
+            activities_to_log.append({
+                "date": current_time.strftime("%Y-%m-%d"),
+                "startTime": current_time.strftime("%H:%M:%S"),
+                "durationMillis": int(duration_part_ms),
+                "distance": steps_part,
+                "distanceUnit": "steps",
+            })
+
+            current_time = next_midnight
+            remaining_ms -= duration_part_ms
+            remaining_steps -= steps_part
+
+        if remaining_ms > 0:
+            activities_to_log.append({
+                "date": current_time.strftime("%Y-%m-%d"),
+                "startTime": current_time.strftime("%H:%M:%S"),
+                "durationMillis": int(remaining_ms),
+                "distance": remaining_steps,
+                "distanceUnit": "steps",
+            })
 
         # Fitbit requires using 'distanceUnit=steps' and pushing steps into the distance field to manually log daily steps
         activity_id = 90013  # Walking
+        success_all = True
 
-        print(f"Logging {steps} steps to Fitbit (Walking activity)...")
-        try:
-            response = self.client.log_activity(
-                {
-                    "activityId": activity_id,
-                    "startTime": start_time_str,
-                    "durationMillis": int(duration_ms),
-                    "date": date_str,
-                    "distance": steps,
-                    "distanceUnit": "steps",
-                }
-            )
-            print(f"Successfully logged to Fitbit. Response: {response}")
-            return True
-        except fitbit.exceptions.HTTPBadRequest as e:
-            print(f"Fitbit API rejected request (Bad Request 400): {e}")
-            return False
-        except Exception as e:
-            print(f"Failed to log to Fitbit: {e}")
-            if hasattr(e, "response") and getattr(e, "response", None):
-                print(f"API Error Response: {e.response.text}")
-            return False
+        for idx, act in enumerate(activities_to_log):
+            print(f"Logging part {idx+1}/{len(activities_to_log)}: {act['distance']} steps to Fitbit on {act['date']} at {act['startTime']}...")
+            try:
+                response = self.client.log_activity(
+                    {
+                        "activityId": activity_id,
+                        "startTime": act["startTime"],
+                        "durationMillis": act["durationMillis"],
+                        "date": act["date"],
+                        "distance": act["distance"],
+                        "distanceUnit": act["distanceUnit"],
+                    }
+                )
+                print(f"Successfully logged to Fitbit. Response: {response}")
+            except fitbit.exceptions.HTTPBadRequest as e:
+                print(f"Fitbit API rejected request (Bad Request 400): {e}")
+                success_all = False
+            except Exception as e:
+                print(f"Failed to log to Fitbit: {e}")
+                if hasattr(e, "response") and getattr(e, "response", None):
+                    print(f"API Error Response: {e.response.text}")
+                success_all = False
+
+        return success_all
 
     def get_weight(self):
         if not self.client:
