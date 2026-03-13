@@ -148,6 +148,7 @@ class App(ctk.CTk):
                 value="Missing Steps: 0 (Goal: 0, Initial: 0)"
             ),
             "eta": ctk.StringVar(value="ETA: N/A"),
+            "avg_step_length": ctk.StringVar(value="Avg Step Length: 0.0 cm"),
         }
 
         # Labels
@@ -185,7 +186,12 @@ class App(ctk.CTk):
             self.metrics_frame,
             textvariable=self.metrics["weight"],
             font=("Helvetica", 24),
-        ).grid(row=3, column=0, columnspan=2, pady=10, padx=10)
+        ).grid(row=3, column=0, pady=10, padx=10)
+        ctk.CTkLabel(
+            self.metrics_frame,
+            textvariable=self.metrics["avg_step_length"],
+            font=("Helvetica", 24),
+        ).grid(row=3, column=1, pady=10, padx=10)
         ctk.CTkLabel(
             self.metrics_frame,
             textvariable=self.metrics["missing_steps"],
@@ -383,6 +389,7 @@ class App(ctk.CTk):
                     )
                 except Exception:
                     pass
+                self._update_avg_step_length()
                 self._update_window_title()
             elif key in self.metrics:
                 if key == "calories":
@@ -397,10 +404,12 @@ class App(ctk.CTk):
                             f"Missing Steps: {missing_steps} (Goal: {self.step_goal}, Initial: {self.fitbit_steps})"
                         )
                     self._update_eta()
+                    self._update_avg_step_length()
                 elif key == "distance":
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.dist_unit}"
                     )
+                    self._update_avg_step_length()
                 elif key == "speed":
                     self.metrics[key].set(
                         f"{key.capitalize()}: {value:.2f} {self.speed_unit}"
@@ -457,6 +466,28 @@ class App(ctk.CTk):
                 self.metrics["eta"].set("ETA: N/A")
 
         except Exception as e:
+            pass
+
+    def _update_avg_step_length(self):
+        try:
+            steps_str = self.metrics["steps"].get().split(": ")[1]
+            dist_str = self.metrics["distance"].get().split(": ")[1].split(" ")[0]
+            steps = int(steps_str)
+            dist = float(dist_str)
+            
+            unit = "cm" if self.unit_system == "metric" else "in"
+            
+            if steps > 0 and dist > 0:
+                if self.unit_system == "metric":
+                    # dist is km, want cm (1 km = 100,000 cm)
+                    avg = (dist * 100000) / steps
+                else:
+                    # dist is miles, want inches (1 mile = 63,360 inches)
+                    avg = (dist * 63360) / steps
+                self.metrics["avg_step_length"].set(f"Avg Step Length: {avg:.1f} {unit}")
+            else:
+                self.metrics["avg_step_length"].set(f"Avg Step Length: 0.0 {unit}")
+        except Exception:
             pass
 
     def _update_window_title(self):
