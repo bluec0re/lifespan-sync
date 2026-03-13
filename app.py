@@ -11,6 +11,7 @@ import pystray
 from PIL import Image, ImageDraw
 import json
 import os
+import random
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -121,6 +122,7 @@ class App(ctk.CTk):
         self.target_speed = None  # Tracked from `metrics` upon first connect
         self.step_goal = None
         self.fitbit_steps = None
+        self.goal_reached_notified = False
 
         self.unit_system = "metric"
         self.dist_unit = "km"
@@ -449,6 +451,8 @@ class App(ctk.CTk):
                 seconds = 0
 
             missing_steps = self.step_goal - (steps + self.fitbit_steps)
+            if missing_steps > 0:
+                self.goal_reached_notified = False
 
             if steps > 0 and seconds > 0 and missing_steps > 0:
                 steps_per_sec = steps / seconds
@@ -462,11 +466,90 @@ class App(ctk.CTk):
                 )
             elif missing_steps <= 0:
                 self.metrics["eta"].set("ETA: Goal Reached!")
+                self._play_goal_reached_animation()
             else:
                 self.metrics["eta"].set("ETA: N/A")
 
         except Exception as e:
             pass
+
+    def _play_goal_reached_animation(self):
+        if getattr(self, "goal_reached_notified", False):
+            return
+        self.goal_reached_notified = True
+
+        anim_win = tk.Toplevel(self)
+        anim_win.overrideredirect(True)
+        anim_win.attributes("-topmost", True)
+        
+        trans_color = "#000001"
+        try:
+            anim_win.attributes("-transparentcolor", trans_color)
+        except Exception:
+            pass
+        anim_win.config(bg=trans_color)
+        
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        anim_win.geometry(f"{screen_width}x{screen_height}+0+0")
+        
+        canvas = tk.Canvas(anim_win, bg=trans_color, highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
+        colors = ["#f2b900", "#ff4a4a", "#00d288", "#00a2ff", "#ff00dd", "#ffffff"]
+        confetti = []
+        for _ in range(250):
+            cx = random.randint(0, screen_width)
+            cy = random.randint(-screen_height, 0)
+            size = random.randint(8, 16)
+            color = random.choice(colors)
+            if random.random() > 0.5:
+                item = canvas.create_rectangle(cx, cy, cx+size, cy+size, fill=color, outline="")
+            else:
+                item = canvas.create_oval(cx, cy, cx+size, cy+size, fill=color, outline="")
+            
+            confetti.append({
+                "item": item, 
+                "y": cy, 
+                "vy": random.uniform(6, 12),
+                "vx": random.uniform(-2, 2)
+            })
+
+        # Add text drop shadow
+        canvas.create_text(
+            screen_width // 2 + 3, screen_height // 2 + 3,
+            text="GOAL REACHED!",
+            font=("Helvetica", 64, "bold"),
+            fill="#000000",
+            justify="center"
+        )
+        # Add main text
+        canvas.create_text(
+            screen_width // 2, screen_height // 2,
+            text="GOAL REACHED!",
+            font=("Helvetica", 64, "bold"),
+            fill="#00ff00",
+            justify="center"
+        )
+
+        def animate():
+            if not anim_win.winfo_exists():
+                return
+            try:
+                active_particles = False
+                for c in confetti:
+                    canvas.move(c["item"], c["vx"], c["vy"])
+                    c["y"] += c["vy"]
+                    if c["y"] < screen_height:
+                        active_particles = True
+                if active_particles:
+                    self.after(20, animate)
+                else:
+                    anim_win.destroy()
+            except Exception:
+                pass
+
+        animate()
 
     def _update_avg_step_length(self):
         try:
