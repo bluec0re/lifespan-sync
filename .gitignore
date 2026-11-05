@@ -19,6 +19,8 @@ __pycache__/
 
 # Application Data
 fitbit_tokens.json
+google_health_tokens.json
+step_accumulator.json
 config.json
 
 # Logs

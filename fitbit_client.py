@@ -1,24 +1,38 @@
-import fitbit
+import datetime
 import json
 import os
-import requests
-import datetime
+import threading
 import time
-from requests_oauthlib import OAuth2Session
+import urllib.parse
 import webbrowser
 import cherrypy
-import threading
+from requests_oauthlib import OAuth2Session
 
-# Allow OAuthlib to use HTTP for local testing
+# Allow OAuthlib to use HTTP for local testing and relax scope ordering differences from Google OAuth
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
-TOKEN_FILE = "fitbit_tokens.json"
+TOKEN_FILE = "google_health_tokens.json"
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_HEALTH_API_BASE = "https://health.googleapis.com/v4"
+
+GOOGLE_HEALTH_SCOPES = [
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.writeonly",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+    "https://www.googleapis.com/auth/googlehealth.profile.readonly",
+    "https://www.googleapis.com/auth/googlehealth.settings.readonly",
+]
+
+DEFAULT_STEP_GOAL = 10000
 
 
 class OAuth2Server:
     def __init__(self, client_id, client_secret):
         self.success_html = """
-            <h1>You are now authorized!</h1>
+            <h1>You are now authorized with Google Health!</h1>
             <p>Please close this browser window and return to the application.</p>
             """
         self.failure_html = """
@@ -27,40 +41,49 @@ class OAuth2Server:
             """
         self.client_id = client_id
         self.client_secret = client_secret
-        self.fitbit = OAuth2Session(
+        self.oauth = OAuth2Session(
             client_id,
             redirect_uri="http://127.0.0.1:8080/",
-            scope=["activity", "profile", "weight"],
+            scope=GOOGLE_HEALTH_SCOPES,
+            pkce="S256",
         )
-        self.auth_url_base = "https://www.fitbit.com/oauth2/authorize"
-        self.token_url = "https://api.fitbit.com/oauth2/token"
-        self.access_token = None
-        self.refresh_token = None
-        self.expires_at = None
+        self.auth_url_base = GOOGLE_AUTH_URL
+        self.token_url = GOOGLE_TOKEN_URL
+        self.token = None
+
+    def get_authorization_url(self):
+        url, _ = self.oauth.authorization_url(
+            self.auth_url_base,
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+        )
+        return url
 
     def browser_authorize(self):
-        url, _ = self.fitbit.authorization_url(self.auth_url_base)
-        print("Opening browser to authorize Fitbit...")
+        url = self.get_authorization_url()
+        print("Opening browser to authorize Google Health...")
         webbrowser.open(url)
         cherrypy.quickstart(self)
 
     @cherrypy.expose
-    def index(self, state="", code=None, error=None):
+    def index(self, state="", code=None, error=None, **params):
         if error or not code:
             threading.Timer(1, cherrypy.engine.exit).start()
             return self.failure_html
 
         try:
-            self.fitbit.fetch_token(
-                self.token_url,
-                client_secret=self.client_secret,
-                authorization_response=cherrypy.url()
+            kwargs = {
+                "authorization_response": cherrypy.url()
                 + "?"
                 + cherrypy.request.query_string,
+            }
+            if self.client_secret:
+                kwargs["client_secret"] = self.client_secret
+            self.token = self.oauth.fetch_token(
+                self.token_url,
+                **kwargs,
             )
-            self.access_token = self.fitbit.token["access_token"]
-            self.refresh_token = self.fitbit.token["refresh_token"]
-            self.expires_at = self.fitbit.token["expires_at"]
             threading.Timer(1, cherrypy.engine.exit).start()
             return self.success_html
         except Exception as e:
@@ -69,16 +92,34 @@ class OAuth2Server:
             return self.failure_html
 
 
-class FitbitClient:
-    def __init__(self, client_id, client_secret):
+class GoogleHealthClient:
+    def __init__(self, client_id, client_secret, step_goal=DEFAULT_STEP_GOAL):
         self.client_id = client_id
         self.client_secret = client_secret
+        self.step_goal = step_goal if step_goal is not None else DEFAULT_STEP_GOAL
         self.client = None
+        self._tokens = None
         self._load_or_authorize()
 
     def _update_tokens(self, token):
+        # Google's token refresh response often omits refresh_token; preserve the existing one
+        if self._tokens and "refresh_token" in self._tokens and not token.get("refresh_token"):
+            token["refresh_token"] = self._tokens["refresh_token"]
+        self._tokens = dict(token)
         with open(TOKEN_FILE, "w") as f:
-            json.dump(token, f)
+            json.dump(self._tokens, f)
+
+    def _create_session(self, tokens):
+        refresh_kwargs = {"client_id": self.client_id}
+        if self.client_secret:
+            refresh_kwargs["client_secret"] = self.client_secret
+        return OAuth2Session(
+            self.client_id,
+            token=tokens,
+            auto_refresh_url=GOOGLE_TOKEN_URL,
+            auto_refresh_kwargs=refresh_kwargs,
+            token_updater=self._update_tokens,
+        )
 
     def _load_or_authorize(self):
         if os.path.exists(TOKEN_FILE):
@@ -86,24 +127,25 @@ class FitbitClient:
                 with open(TOKEN_FILE, "r") as f:
                     tokens = json.load(f)
 
-                # Check expiration explicitly (expires_at is a unix timestamp in seconds)
-                expires_at = tokens.get("expires_at", 0)
-                if time.time() > expires_at:
-                    print(
-                        f"Token expired at {expires_at}. Fitbit library will attempt automatic refresh."
-                    )
+                self._tokens = tokens
+                session = self._create_session(tokens)
 
-                self.client = fitbit.Fitbit(
-                    self.client_id,
-                    self.client_secret,
-                    access_token=tokens.get("access_token"),
-                    refresh_token=tokens.get("refresh_token"),
-                    expires_at=expires_at,
-                    refresh_cb=self._update_tokens,
-                    system=fitbit.Fitbit.METRIC,
-                )
-                # Token loaded successfully
-                print("Fitbit client loaded via saved tokens.")
+                expires_at = tokens.get("expires_at", 0)
+                if time.time() > expires_at - 60:
+                    print(
+                        f"Token expired at {expires_at}. Refreshing Google OAuth token..."
+                    )
+                    refreshed = session.refresh_token(
+                        GOOGLE_TOKEN_URL,
+                        refresh_token=tokens.get("refresh_token"),
+                        client_id=self.client_id,
+                        client_secret=self.client_secret,
+                    )
+                    self._update_tokens(refreshed)
+                    session = self._create_session(self._tokens)
+
+                self.client = session
+                print("Google Health client loaded via saved tokens.")
                 return
             except Exception as e:
                 print(
@@ -115,8 +157,8 @@ class FitbitClient:
         print(
             "\n\n################################################################################"
         )
-        print("FITBIT AUTH REQUIRED.")
-        url, _ = server.fitbit.authorization_url(server.auth_url_base)
+        print("GOOGLE HEALTH AUTH REQUIRED.")
+        url = server.get_authorization_url()
         print(f"Opening Browser to: {url}")
         print(
             "################################################################################\n\n"
@@ -124,89 +166,147 @@ class FitbitClient:
         webbrowser.open(url)
         cherrypy.quickstart(server)
 
-        if server.access_token:
-            tokens = {
-                "access_token": server.access_token,
-                "refresh_token": server.refresh_token,
-                "expires_at": server.expires_at,
-            }
-            self._update_tokens(tokens)
-            self.client = fitbit.Fitbit(
-                self.client_id,
-                self.client_secret,
-                access_token=server.access_token,
-                refresh_token=server.refresh_token,
-                expires_at=server.expires_at,
-                refresh_cb=self._update_tokens,
-                system=fitbit.Fitbit.METRIC,
-            )
-            print("Successfully authorized and saved new tokens.")
+        if server.token and server.token.get("access_token"):
+            self._update_tokens(server.token)
+            self.client = self._create_session(self._tokens)
+            print("Successfully authorized and saved new Google Health tokens.")
         else:
             print("Authorization failed. Could not retrieve tokens.")
 
-    def log_treadmill_activity(self, steps, distance_km, duration_ms):
+    def _request(self, method, path, **kwargs):
         if not self.client:
-            print("Cannot log to Fitbit: Not authorized.")
+            raise RuntimeError("Google Health client is not authorized.")
+        url = f"{GOOGLE_HEALTH_API_BASE}/{path.lstrip('/')}"
+        response = self.client.request(method, url, **kwargs)
+        if response.status_code == 401 and self._tokens and self._tokens.get("refresh_token"):
+            print("Received 401 from Google Health API; attempting token refresh...")
+            refreshed = self.client.refresh_token(
+                GOOGLE_TOKEN_URL,
+                refresh_token=self._tokens.get("refresh_token"),
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+            )
+            self._update_tokens(refreshed)
+            response = self.client.request(method, url, **kwargs)
+        response.raise_for_status()
+        if response.content:
+            return response.json()
+        return {}
+
+    @staticmethod
+    def _format_utc_and_offset(dt):
+        local_dt = dt.astimezone()
+        utc_dt = local_dt.astimezone(datetime.timezone.utc)
+        offset_td = local_dt.utcoffset()
+        offset_sec = int(offset_td.total_seconds()) if offset_td is not None else 0
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), f"{offset_sec}s"
+
+    def log_treadmill_activity(self, steps, distance_km, duration_ms, calories_kcal=None):
+        if not self.client:
+            print("Cannot log to Google Health: Not authorized.")
             return False
 
         end_time_dt = datetime.datetime.now()
         start_time_dt = end_time_dt - datetime.timedelta(milliseconds=duration_ms)
 
+        total_distance_mm = float(distance_km) * 1_000_000.0
+
         activities_to_log = []
         current_time = start_time_dt
         remaining_ms = duration_ms
-        remaining_steps = steps
+        remaining_steps = int(steps)
+        remaining_dist_mm = total_distance_mm
+        remaining_calories = float(calories_kcal) if calories_kcal is not None else None
 
         while current_time.date() < end_time_dt.date():
-            next_midnight = datetime.datetime.combine(current_time.date() + datetime.timedelta(days=1), datetime.time.min)
+            next_midnight = datetime.datetime.combine(
+                current_time.date() + datetime.timedelta(days=1), datetime.time.min
+            )
             duration_part_ms = (next_midnight - current_time).total_seconds() * 1000
-            steps_part = int(steps * (duration_part_ms / duration_ms))
+            fraction = duration_part_ms / duration_ms if duration_ms > 0 else 0
+            steps_part = int(steps * fraction)
+            dist_part_mm = total_distance_mm * fraction
+            cal_part = (
+                float(calories_kcal) * fraction
+                if calories_kcal is not None
+                else None
+            )
 
-            activities_to_log.append({
-                "date": current_time.strftime("%Y-%m-%d"),
-                "startTime": current_time.strftime("%H:%M:%S"),
-                "durationMillis": int(duration_part_ms),
-                "distance": steps_part,
-                "distanceUnit": "steps",
-            })
+            activities_to_log.append(
+                {
+                    "start_dt": current_time,
+                    "end_dt": next_midnight,
+                    "steps": steps_part,
+                    "distance_mm": dist_part_mm,
+                    "calories_kcal": cal_part,
+                }
+            )
 
             current_time = next_midnight
             remaining_ms -= duration_part_ms
             remaining_steps -= steps_part
+            remaining_dist_mm -= dist_part_mm
+            if remaining_calories is not None and cal_part is not None:
+                remaining_calories -= cal_part
 
         if remaining_ms > 0:
-            activities_to_log.append({
-                "date": current_time.strftime("%Y-%m-%d"),
-                "startTime": current_time.strftime("%H:%M:%S"),
-                "durationMillis": int(remaining_ms),
-                "distance": remaining_steps,
-                "distanceUnit": "steps",
-            })
+            activities_to_log.append(
+                {
+                    "start_dt": current_time,
+                    "end_dt": end_time_dt,
+                    "steps": max(0, remaining_steps),
+                    "distance_mm": max(0.0, remaining_dist_mm),
+                    "calories_kcal": (
+                        max(0.0, remaining_calories)
+                        if remaining_calories is not None
+                        else None
+                    ),
+                }
+            )
 
-        # Fitbit requires using 'distanceUnit=steps' and pushing steps into the distance field to manually log daily steps
-        activity_id = 90013  # Walking
         success_all = True
 
         for idx, act in enumerate(activities_to_log):
-            print(f"Logging part {idx+1}/{len(activities_to_log)}: {act['distance']} steps to Fitbit on {act['date']} at {act['startTime']}...")
+            start_time_str, start_offset_str = self._format_utc_and_offset(
+                act["start_dt"]
+            )
+            end_time_str, end_offset_str = self._format_utc_and_offset(act["end_dt"])
+
+            metrics_summary = {
+                "steps": str(int(act["steps"])),
+                "distanceMillimeters": round(float(act["distance_mm"]), 2),
+            }
+            if act["calories_kcal"] is not None and act["calories_kcal"] > 0:
+                metrics_summary["caloriesKcal"] = round(float(act["calories_kcal"]), 2)
+
+            payload = {
+                "exercise": {
+                    "interval": {
+                        "startTime": start_time_str,
+                        "startUtcOffset": start_offset_str,
+                        "endTime": end_time_str,
+                        "endUtcOffset": end_offset_str,
+                    },
+                    "exerciseType": "WALKING",
+                    "displayName": "Walking",
+                    "metricsSummary": metrics_summary,
+                }
+            }
+
+            print(
+                f"Logging part {idx + 1}/{len(activities_to_log)}: {act['steps']} steps to Google Health "
+                f"({start_time_str} -> {end_time_str})..."
+            )
             try:
-                response = self.client.log_activity(
-                    {
-                        "activityId": activity_id,
-                        "startTime": act["startTime"],
-                        "durationMillis": act["durationMillis"],
-                        "date": act["date"],
-                        "distance": act["distance"],
-                        "distanceUnit": act["distanceUnit"],
-                    }
+                response = self._request(
+                    "POST",
+                    "users/me/dataTypes/exercise/dataPoints",
+                    json=payload,
                 )
-                print(f"Successfully logged to Fitbit. Response: {response}")
-            except fitbit.exceptions.HTTPBadRequest as e:
-                print(f"Fitbit API rejected request (Bad Request 400): {e}")
-                success_all = False
+                print(f"Successfully logged to Google Health. Response: {response}")
             except Exception as e:
-                print(f"Failed to log to Fitbit: {e}")
-                if hasattr(e, "response") and getattr(e, "response", None):
+                print(f"Failed to log to Google Health: {e}")
+                if hasattr(e, "response") and getattr(e, "response", None) is not None:
                     print(f"API Error Response: {e.response.text}")
                 success_all = False
 
@@ -214,93 +314,153 @@ class FitbitClient:
 
     def get_weight(self):
         if not self.client:
-            print("Cannot get weight from Fitbit: Not authorized.")
+            print("Cannot get weight from Google Health: Not authorized.")
             return None
-        print("Fetching user profile/weight from Fitbit...")
+        print("Fetching user weight from Google Health...")
         try:
-            profile = self.client.user_profile_get()
-            if "user" in profile and "weight" in profile["user"]:
-                weight = profile["user"]["weight"]
-                print(f"Successfully retrieved weight from Fitbit: {weight}")
-                return weight
+            end_utc = datetime.datetime.now(datetime.timezone.utc)
+            start_utc = end_utc - datetime.timedelta(days=90)
+            filter_str = (
+                f'weight.sample_time.physical_time >= "{start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")}" '
+                f'AND weight.sample_time.physical_time < "{end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")}"'
+            )
+            data = self._request(
+                "GET",
+                "users/me/dataTypes/weight/dataPoints:reconcile",
+                params={"filter": filter_str},
+            )
+            points = (
+                data.get("reconciledDataPoints")
+                or data.get("dataPoints")
+                or []
+            )
+
+            # Fallback to unfiltered list if no weight logged in the last 90 days
+            if not points:
+                data = self._request(
+                    "GET",
+                    "users/me/dataTypes/weight/dataPoints",
+                )
+                points = data.get("dataPoints") or []
+
+            latest_weight_grams = None
+            latest_time = ""
+            for dp in points:
+                weight_obj = dp.get("weight", {})
+                grams = weight_obj.get("weightGrams")
+                if grams is None:
+                    continue
+                sample_time = weight_obj.get("sampleTime", {})
+                phys_time = sample_time.get("physicalTime") or dp.get("sampleTime") or ""
+                if latest_weight_grams is None or phys_time >= latest_time:
+                    latest_weight_grams = float(grams)
+                    latest_time = phys_time
+
+            if latest_weight_grams is not None and latest_weight_grams > 0:
+                weight_kg = round(latest_weight_grams / 1000.0, 2)
+                print(f"Successfully retrieved weight from Google Health: {weight_kg} kg")
+                return weight_kg
             else:
-                print("Weight not found in Fitbit profile payload.")
+                print("Weight not found in Google Health data points.")
                 return None
         except Exception as e:
-            print(f"Failed to fetch weight from Fitbit: {e}")
+            print(f"Failed to fetch weight from Google Health: {e}")
+            if hasattr(e, "response") and getattr(e, "response", None) is not None:
+                print(f"API Error Response: {e.response.text}")
             return None
 
     def get_step_goal(self):
-        if not self.client:
-            print("Cannot get step goal from Fitbit: Not authorized.")
-            return None
-        print("Fetching step goal from Fitbit...")
-        try:
-            profile = self.client.activities_daily_goal()
-            if "goals" in profile and "steps" in profile["goals"]:
-                step_goal = profile["goals"]["steps"]
-                print(f"Successfully retrieved step goal from Fitbit: {step_goal}")
-                return step_goal
-            else:
-                print("Step goal not found in Fitbit profile payload.")
-                return None
-        except Exception as e:
-            print(f"Failed to fetch step goal from Fitbit: {e}")
-            return None
+        # The Google Health API v4 does not expose daily step goals via server-side REST endpoints;
+        # use the configured step_goal (defaulting to 10,000 steps).
+        print(f"Using configured daily step goal: {self.step_goal}")
+        return self.step_goal
 
     def get_current_steps(self):
         if not self.client:
-            print("Cannot get current steps from Fitbit: Not authorized.")
+            print("Cannot get current steps from Google Health: Not authorized.")
             return None
-        print("Fetching current steps from Fitbit...")
+        print("Fetching current steps from Google Health...")
         try:
-            activities = self.client.activities(
-                date=datetime.datetime.now().strftime("%Y-%m-%d")
+            today = datetime.date.today()
+            tomorrow = today + datetime.timedelta(days=1)
+            payload = {
+                "range": {
+                    "start": {
+                        "date": {
+                            "year": today.year,
+                            "month": today.month,
+                            "day": today.day,
+                        }
+                    },
+                    "end": {
+                        "date": {
+                            "year": tomorrow.year,
+                            "month": tomorrow.month,
+                            "day": tomorrow.day,
+                        }
+                    },
+                },
+                "windowSizeDays": 1,
+            }
+            response = self._request(
+                "POST",
+                "users/me/dataTypes/steps/dataPoints:dailyRollUp",
+                json=payload,
             )
-            if "summary" in activities and "steps" in activities["summary"]:
-                current_steps = activities["summary"]["steps"]
-                print(
-                    f"Successfully retrieved current steps from Fitbit: {current_steps}"
-                )
-                return current_steps
-            else:
-                print("Current steps not found in Fitbit profile payload.")
-                return None
+            rollup_points = (
+                response.get("rollupDataPoints")
+                or response.get("dailyRollupDataPoints")
+                or []
+            )
+            current_steps = 0
+            for dp in rollup_points:
+                steps_obj = dp.get("steps", {})
+                count_sum = steps_obj.get("countSum")
+                if count_sum is not None:
+                    current_steps += int(count_sum)
+
+            print(
+                f"Successfully retrieved current steps from Google Health: {current_steps}"
+            )
+            return current_steps
         except Exception as e:
-            print(f"Failed to fetch current steps from Fitbit: {e}")
+            print(f"Failed to fetch current steps from Google Health: {e}")
+            if hasattr(e, "response") and getattr(e, "response", None) is not None:
+                print(f"API Error Response: {e.response.text}")
             return None
 
     def get_steps_and_goal(self):
         if not self.client:
-            print("Cannot get steps and goal from Fitbit: Not authorized.")
+            print("Cannot get steps and goal from Google Health: Not authorized.")
             return None
-        print("Fetching steps and goal from Fitbit...")
-        try:
-            activities = self.client.activities(
-                date=datetime.datetime.now().strftime("%Y-%m-%d")
-            )
-            if (
-                "summary" in activities
-                and "steps" in activities["summary"]
-                and "goals" in activities
-                and "steps" in activities["goals"]
-            ):
-                current_steps = activities["summary"]["steps"]
-                step_goal = activities["goals"]["steps"]
-                print(
-                    f"Successfully retrieved current steps from Fitbit: {current_steps}"
-                )
-                print(f"Successfully retrieved step goal from Fitbit: {step_goal}")
-                return current_steps, step_goal
-            else:
-                print("Current steps or step goal not found in Fitbit profile payload.")
-                return None
-        except Exception as e:
-            print(f"Failed to fetch current steps from Fitbit: {e}")
-            return None
+        current_steps = self.get_current_steps()
+        step_goal = self.get_step_goal()
+        if current_steps is not None and step_goal is not None:
+            return current_steps, step_goal
+        return None
+
+
+# Backwards-compatible alias
+FitbitClient = GoogleHealthClient
 
 
 if __name__ == "__main__":
-    CLIENT_ID = input("Enter your Fitbit Client ID: ").strip()
-    CLIENT_SECRET = input("Enter your Fitbit Client Secret: ").strip()
-    client = FitbitClient(CLIENT_ID, CLIENT_SECRET)
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    client_id = None
+    client_secret = None
+    step_goal = None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            cfg = json.load(f)
+            client_id = cfg.get("google_client_id") or cfg.get("fitbit_client_id")
+            client_secret = cfg.get("google_client_secret") or cfg.get("fitbit_client_secret")
+            step_goal = cfg.get("step_goal")
+
+    if not client_id:
+        client_id = input("Enter your Google OAuth Client ID: ").strip()
+    if not client_secret:
+        client_secret = input("Enter your Google OAuth Client Secret: ").strip()
+
+    client = GoogleHealthClient(client_id, client_secret, step_goal=step_goal)
+    client.get_weight()
+    client.get_steps_and_goal()
